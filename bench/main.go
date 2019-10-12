@@ -144,7 +144,7 @@ func main() {
 	println()
 
 	println("-- github.com/tidwall/shardmap --")
-	var com shardmap.Map
+	com := shardmap.New(0)
 	print("set: ")
 	lotsa.Ops(N, runtime.NumCPU(), func(i, _ int) {
 		com.Set(keys[i], i)

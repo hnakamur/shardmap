@@ -71,9 +71,7 @@ func TestRandomData(t *testing.T) {
 		switch rand.Int() % 5 {
 		default:
 			m = New(N / ((rand.Int() % 3) + 1))
-		case 1:
-			m = new(Map)
-		case 2:
+		case 1, 2:
 			m = New(0)
 		}
 		v, ok := m.Get(k(999))
@@ -183,7 +181,7 @@ func TestRandomData(t *testing.T) {
 }
 
 func TestSetAccept(t *testing.T) {
-	var m Map
+	m := New(0)
 	m.Set("hello", "world")
 	prev, replaced := m.SetAccept("hello", "planet", nil)
 	if !replaced {
@@ -247,7 +245,7 @@ func TestSetAccept(t *testing.T) {
 }
 
 func TestDeleteAccept(t *testing.T) {
-	var m Map
+	m := New(0)
 	m.Set("hello", "world")
 	prev, deleted := m.DeleteAccept("hello", nil)
 	if !deleted {
@@ -299,7 +297,7 @@ func TestDeleteAccept(t *testing.T) {
 }
 
 func TestClear(t *testing.T) {
-	var m Map
+	m := New(0)
 	for i := 0; i < 1000; i++ {
 		m.Set(fmt.Sprintf("%d", i), i)
 	}
