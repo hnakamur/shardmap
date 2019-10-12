@@ -8,7 +8,6 @@ import (
 	"math/rand"
 	"reflect"
 	"runtime"
-	"strconv"
 	"sync"
 	"testing"
 	"testing/quick"
@@ -116,7 +115,7 @@ func TestConcurrentRange(t *testing.T) {
 
 	m := new(shardmap.Map)
 	for n := int64(1); n <= mapSize; n++ {
-		m.Store(strconv.FormatInt(n, 10), int64(n))
+		m.Store(n, int64(n))
 	}
 
 	done := make(chan struct{})
@@ -138,9 +137,9 @@ func TestConcurrentRange(t *testing.T) {
 				}
 				for n := int64(1); n < mapSize; n++ {
 					if r.Int63n(mapSize) == 0 {
-						m.Store(strconv.FormatInt(n, 10), n*i*g)
+						m.Store(n, n*i*g)
 					} else {
-						m.Load(strconv.FormatInt(n, 10))
+						m.Load(n)
 					}
 				}
 			}
@@ -155,11 +154,7 @@ func TestConcurrentRange(t *testing.T) {
 		seen := make(map[int64]bool, mapSize)
 
 		m.Range(func(ki, vi interface{}) bool {
-			sk, v := ki.(string), vi.(int64)
-			k, err := strconv.ParseInt(sk, 10, 64)
-			if err != nil {
-				t.Fatal(err)
-			}
+			k, v := ki.(int64), vi.(int64)
 			if v%k != 0 {
 				t.Fatalf("while Storing multiples of %v, Range saw value %v", k, v)
 			}
