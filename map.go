@@ -99,50 +99,50 @@ func (m *Map) Range(iter func(key, value interface{}) bool) {
 }
 
 func (m *Map) choose(key interface{}) int {
-	var h uint64
+	var h uintptr
 	switch k := key.(type) {
 	case nil:
-		// do nothing
+		h = nilinterhash(unsafe.Pointer(&k), 0)
 	case bool:
-		h = memhashBool(k)
+		h = memhash(unsafe.Pointer(&k), 0, unsafe.Sizeof(false))
 	case int:
-		h = memhashInt(k)
+		h = memhash(unsafe.Pointer(&k), 0, unsafe.Sizeof(int(0)))
 	case uint:
-		h = memhashUint(k)
+		h = memhash(unsafe.Pointer(&k), 0, unsafe.Sizeof(uint(0)))
 	case uintptr:
-		h = memhashUintptr(k)
+		h = memhash(unsafe.Pointer(&k), 0, unsafe.Sizeof(uintptr(0)))
 	case int8:
-		h = memhashInt8(k)
+		h = memhash(unsafe.Pointer(&k), 0, unsafe.Sizeof(int8(0)))
 	case uint8:
-		h = memhashUint8(k)
+		h = memhash(unsafe.Pointer(&k), 0, unsafe.Sizeof(uint8(0)))
 	case int16:
-		h = memhashInt16(k)
+		h = memhash(unsafe.Pointer(&k), 0, unsafe.Sizeof(int16(0)))
 	case uint16:
-		h = memhashUint16(k)
+		h = memhash(unsafe.Pointer(&k), 0, unsafe.Sizeof(uint16(0)))
 	case int32:
-		h = memhashInt32(k)
+		h = memhash(unsafe.Pointer(&k), 0, unsafe.Sizeof(int32(0)))
 	case uint32:
-		h = memhashUint32(k)
+		h = memhash(unsafe.Pointer(&k), 0, unsafe.Sizeof(uint32(0)))
 	case int64:
-		h = memhashInt64(k)
+		h = memhash(unsafe.Pointer(&k), 0, unsafe.Sizeof(int64(0)))
 	case uint64:
-		h = memhashUint64(k)
+		h = memhash(unsafe.Pointer(&k), 0, unsafe.Sizeof(uint64(0)))
 	case float32:
-		h = memhashFloat32(k)
+		h = f32hash(unsafe.Pointer(&k), 0)
 	case float64:
-		h = memhashFloat64(k)
+		h = f64hash(unsafe.Pointer(&k), 0)
 	case complex64:
-		h = memhashComplex64(k)
+		h = c64hash(unsafe.Pointer(&k), 0)
 	case complex128:
-		h = memhashComplex128(k)
+		h = c128hash(unsafe.Pointer(&k), 0)
 	case string:
-		h = memHashString(k)
+		h = strhash(unsafe.Pointer(&k), 0)
 	case []byte:
-		h = memHash(k)
+		h = memhash(unsafe.Pointer(&k), 0, uintptr(len(k)))
 	default:
 		panic("unsupported key type in shardmap.Map")
 	}
-	return int(h & uint64(m.shards-1))
+	return int(h & uintptr(m.shards-1))
 }
 
 func (m *Map) initDo() {
@@ -160,94 +160,30 @@ func (m *Map) initDo() {
 	})
 }
 
-type stringStruct struct {
-	str unsafe.Pointer
-	len int
-}
+//go:noescape
+//go:linkname nilinterhash runtime.nilinterhash
+func nilinterhash(p unsafe.Pointer, h uintptr) uintptr
+
+//go:noescape
+//go:linkname f32hash runtime.f32hash
+func f32hash(p unsafe.Pointer, h uintptr) uintptr
+
+//go:noescape
+//go:linkname f64hash runtime.f64hash
+func f64hash(p unsafe.Pointer, h uintptr) uintptr
+
+//go:noescape
+//go:linkname c64hash runtime.c64hash
+func c64hash(p unsafe.Pointer, h uintptr) uintptr
+
+//go:noescape
+//go:linkname c128hash runtime.c128hash
+func c128hash(p unsafe.Pointer, h uintptr) uintptr
 
 //go:noescape
 //go:linkname memhash runtime.memhash
 func memhash(p unsafe.Pointer, h, s uintptr) uintptr
 
-func memhashBool(v bool) uint64 {
-	if v {
-		return 1
-	}
-	return 0
-}
-
-func memhashInt(v int) uint64 {
-	return uint64(memhash(unsafe.Pointer(&v), 0, unsafe.Sizeof(int(0))))
-}
-
-func memhashUint(v uint) uint64 {
-	return uint64(memhash(unsafe.Pointer(&v), 0, unsafe.Sizeof(uint(0))))
-}
-
-func memhashUintptr(v uintptr) uint64 {
-	return uint64(memhash(unsafe.Pointer(&v), 0, unsafe.Sizeof(uintptr(0))))
-}
-
-func memhashInt8(v int8) uint64 {
-	return uint64(memhash(unsafe.Pointer(&v), 0, unsafe.Sizeof(int8(0))))
-}
-
-func memhashUint8(v uint8) uint64 {
-	return uint64(memhash(unsafe.Pointer(&v), 0, unsafe.Sizeof(uint8(0))))
-}
-
-func memhashInt16(v int16) uint64 {
-	return uint64(memhash(unsafe.Pointer(&v), 0, unsafe.Sizeof(int16(0))))
-}
-
-func memhashUint16(v uint16) uint64 {
-	return uint64(memhash(unsafe.Pointer(&v), 0, unsafe.Sizeof(uint16(0))))
-}
-
-func memhashInt32(v int32) uint64 {
-	return uint64(memhash(unsafe.Pointer(&v), 0, unsafe.Sizeof(int32(0))))
-}
-
-func memhashUint32(v uint32) uint64 {
-	return uint64(memhash(unsafe.Pointer(&v), 0, unsafe.Sizeof(uint32(0))))
-}
-
-func memhashInt64(v int64) uint64 {
-	return uint64(memhash(unsafe.Pointer(&v), 0, unsafe.Sizeof(int64(0))))
-}
-
-func memhashUint64(v uint64) uint64 {
-	return uint64(memhash(unsafe.Pointer(&v), 0, unsafe.Sizeof(uint64(0))))
-}
-
-func memhashFloat32(v float32) uint64 {
-	return uint64(memhash(unsafe.Pointer(&v), 0, unsafe.Sizeof(float32(0))))
-}
-
-func memhashFloat64(v float64) uint64 {
-	return uint64(memhash(unsafe.Pointer(&v), 0, unsafe.Sizeof(float64(0))))
-}
-
-func memhashComplex64(v complex64) uint64 {
-	return uint64(memhash(unsafe.Pointer(&v), 0, unsafe.Sizeof(complex64(0))))
-}
-
-func memhashComplex128(v complex128) uint64 {
-	return uint64(memhash(unsafe.Pointer(&v), 0, unsafe.Sizeof(complex128(0))))
-}
-
-// memHash is the hash function used by go map, it utilizes available hardware instructions(behaves
-// as aeshash if aes instruction is available).
-// NOTE: The hash seed changes for every process. So, this cannot be used as a persistent hash.
-func memHash(data []byte) uint64 {
-	ss := (*stringStruct)(unsafe.Pointer(&data))
-	return uint64(memhash(ss.str, 0, uintptr(ss.len)))
-}
-
-// memHashString is the hash function used by go map, it utilizes available hardware instructions
-// (behaves as aeshash if aes instruction is available).
-// NOTE: The hash seed changes for every process. So, this cannot be used as a persistent hash.
-func memHashString(str string) uint64 {
-	ss := (*stringStruct)(unsafe.Pointer(&str))
-	return uint64(memhash(ss.str, 0, uintptr(ss.len)))
-}
+//go:noescape
+//go:linkname strhash runtime.strhash
+func strhash(p unsafe.Pointer, h uintptr) uintptr
