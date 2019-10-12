@@ -3,8 +3,7 @@ package shardmap
 import (
 	"runtime"
 	"sync"
-
-	"github.com/cespare/xxhash"
+	"unsafe"
 )
 
 // Map is a hashmap. Like map[string]interface{}, but sharded and thread-safe.
@@ -157,7 +156,7 @@ func (m *Map) Range(iter func(key string, value interface{}) bool) {
 }
 
 func (m *Map) choose(key string) int {
-	return int(xxhash.Sum64String(key) & uint64(m.shards-1))
+	return int(memHashString(key) & uint64(m.shards-1))
 }
 
 func (m *Map) initDo() {
@@ -171,4 +170,21 @@ func (m *Map) initDo() {
 	for i := 0; i < len(m.maps); i++ {
 		m.maps[i] = make(map[string]interface{}, scap)
 	}
+}
+
+type stringStruct struct {
+	str unsafe.Pointer
+	len int
+}
+
+//go:noescape
+//go:linkname memhash runtime.memhash
+func memhash(p unsafe.Pointer, h, s uintptr) uintptr
+
+// MemHashString is the hash function used by go map, it utilizes available hardware instructions
+// (behaves as aeshash if aes instruction is available).
+// NOTE: The hash seed changes for every process. So, this cannot be used as a persistent hash.
+func memHashString(str string) uint64 {
+	ss := (*stringStruct)(unsafe.Pointer(&str))
+	return uint64(memhash(ss.str, 0, uintptr(ss.len)))
 }
