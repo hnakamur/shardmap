@@ -5,7 +5,6 @@ import (
 	"sync"
 
 	"github.com/cespare/xxhash"
-	"github.com/tidwall/rhh"
 )
 
 // Map is a hashmap. Like map[string]interface{}, but sharded and thread-safe.
@@ -14,7 +13,7 @@ type Map struct {
 	shards int
 	seed   uint32
 	mus    []sync.RWMutex
-	maps   []*rhh.Map
+	maps   []map[string]interface{}
 }
 
 // New returns a new hashmap with the specified capacity. This function is only
@@ -30,7 +29,7 @@ func New(cap int) *Map {
 func (m *Map) Clear() {
 	for i := 0; i < m.shards; i++ {
 		m.mus[i].Lock()
-		m.maps[i] = rhh.New(m.cap / m.shards)
+		m.maps[i] = make(map[string]interface{}, m.cap/m.shards)
 		m.mus[i].Unlock()
 	}
 }
@@ -40,7 +39,8 @@ func (m *Map) Clear() {
 func (m *Map) Set(key string, value interface{}) (prev interface{}, replaced bool) {
 	shard := m.choose(key)
 	m.mus[shard].Lock()
-	prev, replaced = m.maps[shard].Set(key, value)
+	prev, replaced = m.maps[shard][key]
+	m.maps[shard][key] = value
 	m.mus[shard].Unlock()
 	return prev, replaced
 }
@@ -57,16 +57,17 @@ func (m *Map) SetAccept(
 	shard := m.choose(key)
 	m.mus[shard].Lock()
 	defer m.mus[shard].Unlock()
-	prev, replaced = m.maps[shard].Set(key, value)
+	prev, replaced = m.maps[shard][key]
+	m.maps[shard][key] = value
 	if accept != nil {
 		if !accept(prev, replaced) {
 			// revert unaccepted change
 			if !replaced {
 				// delete the newly set data
-				m.maps[shard].Delete(key)
+				delete(m.maps[shard], key)
 			} else {
 				// reset updated data
-				m.maps[shard].Set(key, prev)
+				m.maps[shard][key] = prev
 			}
 			prev, replaced = nil, false
 		}
@@ -79,7 +80,7 @@ func (m *Map) SetAccept(
 func (m *Map) Get(key string) (value interface{}, ok bool) {
 	shard := m.choose(key)
 	m.mus[shard].RLock()
-	value, ok = m.maps[shard].Get(key)
+	value, ok = m.maps[shard][key]
 	m.mus[shard].RUnlock()
 	return value, ok
 }
@@ -89,7 +90,8 @@ func (m *Map) Get(key string) (value interface{}, ok bool) {
 func (m *Map) Delete(key string) (prev interface{}, deleted bool) {
 	shard := m.choose(key)
 	m.mus[shard].Lock()
-	prev, deleted = m.maps[shard].Delete(key)
+	prev, deleted = m.maps[shard][key]
+	delete(m.maps[shard], key)
 	m.mus[shard].Unlock()
 	return prev, deleted
 }
@@ -106,13 +108,14 @@ func (m *Map) DeleteAccept(
 	shard := m.choose(key)
 	m.mus[shard].Lock()
 	defer m.mus[shard].Unlock()
-	prev, deleted = m.maps[shard].Delete(key)
+	prev, deleted = m.maps[shard][key]
+	delete(m.maps[shard], key)
 	if accept != nil {
 		if !accept(prev, deleted) {
 			// revert unaccepted change
 			if deleted {
 				// reset updated data
-				m.maps[shard].Set(key, prev)
+				m.maps[shard][key] = prev
 			}
 			prev, deleted = nil, false
 		}
@@ -123,13 +126,13 @@ func (m *Map) DeleteAccept(
 
 // Len returns the number of values in map.
 func (m *Map) Len() int {
-	var len int
+	var l int
 	for i := 0; i < m.shards; i++ {
 		m.mus[i].Lock()
-		len += m.maps[i].Len()
+		l += len(m.maps[i])
 		m.mus[i].Unlock()
 	}
-	return len
+	return l
 }
 
 // Range iterates overall all key/values.
@@ -140,13 +143,12 @@ func (m *Map) Range(iter func(key string, value interface{}) bool) {
 		func() {
 			m.mus[i].RLock()
 			defer m.mus[i].RUnlock()
-			m.maps[i].Range(func(key string, value interface{}) bool {
+			for key, value := range m.maps[i] {
 				if !iter(key, value) {
 					done = true
-					return false
+					break
 				}
-				return true
-			})
+			}
 		}()
 		if done {
 			break
@@ -165,8 +167,8 @@ func (m *Map) initDo() {
 	}
 	scap := m.cap / m.shards
 	m.mus = make([]sync.RWMutex, m.shards)
-	m.maps = make([]*rhh.Map, m.shards)
+	m.maps = make([]map[string]interface{}, m.shards)
 	for i := 0; i < len(m.maps); i++ {
-		m.maps[i] = rhh.New(scap)
+		m.maps[i] = make(map[string]interface{}, scap)
 	}
 }
