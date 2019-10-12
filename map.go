@@ -13,7 +13,7 @@ type Map struct {
 	shards int
 	seed   uint32
 	mus    []sync.RWMutex
-	maps   []map[string]interface{}
+	maps   []map[interface{}]interface{}
 }
 
 // New returns a new hashmap with the specified capacity. This function is only
@@ -23,62 +23,18 @@ func New(cap int) *Map {
 	return &Map{cap: cap}
 }
 
-// Clear out all values from map
-func (m *Map) Clear() {
-	m.initDo()
-	for i := 0; i < m.shards; i++ {
-		m.mus[i].Lock()
-		m.maps[i] = make(map[string]interface{}, m.cap/m.shards)
-		m.mus[i].Unlock()
-	}
-}
-
-// Set assigns a value to a key.
-// Returns the previous value, or false when no value was assigned.
-func (m *Map) Set(key string, value interface{}) (prev interface{}, replaced bool) {
+// Store sets the value for a key.
+func (m *Map) Store(key, value interface{}) {
 	m.initDo()
 	shard := m.choose(key)
 	m.mus[shard].Lock()
-	prev, replaced = m.maps[shard][key]
 	m.maps[shard][key] = value
 	m.mus[shard].Unlock()
-	return prev, replaced
 }
 
-// SetAccept assigns a value to a key. The "accept" function can be used to
-// inspect the previous value, if any, and accept or reject the change.
-// It's also provides a safe way to block other others from writing to the
-// same shard while inspecting.
-// Returns the previous value, or false when no value was assigned.
-func (m *Map) SetAccept(
-	key string, value interface{},
-	accept func(prev interface{}, replaced bool) bool,
-) (prev interface{}, replaced bool) {
-	m.initDo()
-	shard := m.choose(key)
-	m.mus[shard].Lock()
-	defer m.mus[shard].Unlock()
-	prev, replaced = m.maps[shard][key]
-	m.maps[shard][key] = value
-	if accept != nil {
-		if !accept(prev, replaced) {
-			// revert unaccepted change
-			if !replaced {
-				// delete the newly set data
-				delete(m.maps[shard], key)
-			} else {
-				// reset updated data
-				m.maps[shard][key] = prev
-			}
-			prev, replaced = nil, false
-		}
-	}
-	return prev, replaced
-}
-
-// Get returns a value for a key.
-// Returns false when no value has been assign for key.
-func (m *Map) Get(key string) (value interface{}, ok bool) {
+// Load returns the value stored in the map for a key, or nil if no value is present.
+// The ok result indicates whether value was found in the map.
+func (m *Map) Load(key interface{}) (value interface{}, ok bool) {
 	m.initDo()
 	shard := m.choose(key)
 	m.mus[shard].RLock()
@@ -87,62 +43,42 @@ func (m *Map) Get(key string) (value interface{}, ok bool) {
 	return value, ok
 }
 
-// Delete deletes a value for a key.
-// Returns the deleted value, or false when no value was assigned.
-func (m *Map) Delete(key string) (prev interface{}, deleted bool) {
-	m.initDo()
-	shard := m.choose(key)
-	m.mus[shard].Lock()
-	prev, deleted = m.maps[shard][key]
-	delete(m.maps[shard], key)
-	m.mus[shard].Unlock()
-	return prev, deleted
-}
-
-// DeleteAccept deletes a value for a key. The "accept" function can be used to
-// inspect the previous value, if any, and accept or reject the change.
-// It's also provides a safe way to block other others from writing to the
-// same shard while inspecting.
-// Returns the deleted value, or false when no value was assigned.
-func (m *Map) DeleteAccept(
-	key string,
-	accept func(prev interface{}, replaced bool) bool,
-) (prev interface{}, deleted bool) {
+// LoadOrStore returns the existing value for the key if present.
+// Otherwise, it stores and returns the given value. The loaded result
+// is true if the value was loaded, false if stored.
+func (m *Map) LoadOrStore(key, value interface{}) (actual interface{}, loaded bool) {
 	m.initDo()
 	shard := m.choose(key)
 	m.mus[shard].Lock()
 	defer m.mus[shard].Unlock()
-	prev, deleted = m.maps[shard][key]
-	delete(m.maps[shard], key)
-	if accept != nil {
-		if !accept(prev, deleted) {
-			// revert unaccepted change
-			if deleted {
-				// reset updated data
-				m.maps[shard][key] = prev
-			}
-			prev, deleted = nil, false
-		}
+	actual, loaded = m.maps[shard][key]
+	if loaded {
+		return actual, true
 	}
-
-	return prev, deleted
+	m.maps[shard][key] = value
+	return value, false
 }
 
-// Len returns the number of values in map.
-func (m *Map) Len() int {
+// Delete deletes the value for a key.
+func (m *Map) Delete(key interface{}) {
 	m.initDo()
-	var l int
-	for i := 0; i < m.shards; i++ {
-		m.mus[i].Lock()
-		l += len(m.maps[i])
-		m.mus[i].Unlock()
-	}
-	return l
+	shard := m.choose(key)
+	m.mus[shard].Lock()
+	delete(m.maps[shard], key)
+	m.mus[shard].Unlock()
 }
 
-// Range iterates overall all key/values.
-// It's not safe to call or Set or Delete while ranging.
-func (m *Map) Range(iter func(key string, value interface{}) bool) {
+// Range calls f sequentially for each key and value present in the map.
+// If f returns false, range stops the iteration.
+//
+// Range does not necessarily correspond to any consistent snapshot of the
+// Map's contents: no key will be visited more than once, but if the value
+// for any key is stored or deleted concurrently, Range may reflect any
+// mapping for that key from any point during the Range call.
+//
+// Range may be O(N) with the number of elements in the map even if f returns
+// false after a constant number of calls.
+func (m *Map) Range(iter func(key, value interface{}) bool) {
 	m.initDo()
 	var done bool
 	for i := 0; i < m.shards; i++ {
@@ -162,8 +98,8 @@ func (m *Map) Range(iter func(key string, value interface{}) bool) {
 	}
 }
 
-func (m *Map) choose(key string) int {
-	return int(memHashString(key) & uint64(m.shards-1))
+func (m *Map) choose(key interface{}) int {
+	return int(memHashString(key.(string)) & uint64(m.shards-1))
 }
 
 func (m *Map) initDo() {
@@ -174,9 +110,9 @@ func (m *Map) initDo() {
 		}
 		scap := m.cap / m.shards
 		m.mus = make([]sync.RWMutex, m.shards)
-		m.maps = make([]map[string]interface{}, m.shards)
+		m.maps = make([]map[interface{}]interface{}, m.shards)
 		for i := 0; i < len(m.maps); i++ {
-			m.maps[i] = make(map[string]interface{}, scap)
+			m.maps[i] = make(map[interface{}]interface{}, scap)
 		}
 	})
 }

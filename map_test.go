@@ -1,314 +1,177 @@
-// Copyright 2019 Joshua J Baker. All rights reserved.
-// Use of this source code is governed by an ISC-style
+// Copyright 2016 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-package shardmap
+package shardmap_test
 
 import (
-	"fmt"
 	"math/rand"
+	"reflect"
+	"runtime"
 	"strconv"
+	"sync"
 	"testing"
-	"time"
+	"testing/quick"
+
+	"github.com/tidwall/shardmap"
 )
 
-type keyT = string
-type valueT = interface{}
+type mapOp string
 
-func k(key int) keyT {
-	return strconv.FormatInt(int64(key), 10)
+const (
+	opLoad        = mapOp("Load")
+	opStore       = mapOp("Store")
+	opLoadOrStore = mapOp("LoadOrStore")
+	opDelete      = mapOp("Delete")
+)
+
+var mapOps = [...]mapOp{opLoad, opStore, opLoadOrStore, opDelete}
+
+// mapCall is a quick.Generator for calls on mapInterface.
+type mapCall struct {
+	op   mapOp
+	k, v interface{}
 }
 
-func add(x keyT, delta int) int {
-	i, err := strconv.ParseInt(x, 10, 64)
-	if err != nil {
-		panic(err)
-	}
-	return int(i + int64(delta))
-}
-
-///////////////////////////
-func random(N int, perm bool) []keyT {
-	nums := make([]keyT, N)
-	if perm {
-		for i, x := range rand.Perm(N) {
-			nums[i] = k(x)
-		}
-	} else {
-		m := make(map[keyT]bool)
-		for len(m) < N {
-			m[k(int(rand.Uint64()))] = true
-		}
-		var i int
-		for k := range m {
-			nums[i] = k
-			i++
-		}
-	}
-	return nums
-}
-
-func shuffle(nums []keyT) {
-	for i := range nums {
-		j := rand.Intn(i + 1)
-		nums[i], nums[j] = nums[j], nums[i]
+func (c mapCall) apply(m mapInterface) (interface{}, bool) {
+	switch c.op {
+	case opLoad:
+		return m.Load(c.k)
+	case opStore:
+		m.Store(c.k, c.v)
+		return nil, false
+	case opLoadOrStore:
+		return m.LoadOrStore(c.k, c.v)
+	case opDelete:
+		m.Delete(c.k)
+		return nil, false
+	default:
+		panic("invalid mapOp")
 	}
 }
 
-func init() {
-	//var seed int64 = 1519776033517775607
-	seed := (time.Now().UnixNano())
-	println("seed:", seed)
-	rand.Seed(seed)
+type mapResult struct {
+	value interface{}
+	ok    bool
 }
 
-func TestRandomData(t *testing.T) {
-	N := 10000
-	start := time.Now()
-	for time.Since(start) < time.Second*2 {
-		nums := random(N, true)
-		var m *Map
-		switch rand.Int() % 5 {
-		default:
-			m = New(N / ((rand.Int() % 3) + 1))
-		case 1:
-			m = new(Map)
-		case 2:
-			m = New(0)
-		}
-		v, ok := m.Get(k(999))
-		if ok || v != nil {
-			t.Fatalf("expected %v, got %v", nil, v)
-		}
-		v, ok = m.Delete(k(999))
-		if ok || v != nil {
-			t.Fatalf("expected %v, got %v", nil, v)
-		}
-		if m.Len() != 0 {
-			t.Fatalf("expected %v, got %v", 0, m.Len())
-		}
-		// set a bunch of items
-		for i := 0; i < len(nums); i++ {
-			v, ok := m.Set(nums[i], nums[i])
-			if ok || v != nil {
-				t.Fatalf("expected %v, got %v", nil, v)
+func randValue(r *rand.Rand) interface{} {
+	b := make([]byte, r.Intn(4))
+	for i := range b {
+		b[i] = 'a' + byte(rand.Intn(26))
+	}
+	return string(b)
+}
+
+func (mapCall) Generate(r *rand.Rand, size int) reflect.Value {
+	c := mapCall{op: mapOps[rand.Intn(len(mapOps))], k: randValue(r)}
+	switch c.op {
+	case opStore, opLoadOrStore:
+		c.v = randValue(r)
+	}
+	return reflect.ValueOf(c)
+}
+
+func applyCalls(m mapInterface, calls []mapCall) (results []mapResult, final map[interface{}]interface{}) {
+	for _, c := range calls {
+		v, ok := c.apply(m)
+		results = append(results, mapResult{v, ok})
+	}
+
+	final = make(map[interface{}]interface{})
+	m.Range(func(k, v interface{}) bool {
+		final[k] = v
+		return true
+	})
+
+	return results, final
+}
+
+func applyMap(calls []mapCall) ([]mapResult, map[interface{}]interface{}) {
+	return applyCalls(new(shardmap.Map), calls)
+}
+
+func applyRWMutexMap(calls []mapCall) ([]mapResult, map[interface{}]interface{}) {
+	return applyCalls(new(RWMutexMap), calls)
+}
+
+func applyDeepCopyMap(calls []mapCall) ([]mapResult, map[interface{}]interface{}) {
+	return applyCalls(new(DeepCopyMap), calls)
+}
+
+func TestMapMatchesRWMutex(t *testing.T) {
+	if err := quick.CheckEqual(applyMap, applyRWMutexMap, nil); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestMapMatchesDeepCopy(t *testing.T) {
+	if err := quick.CheckEqual(applyMap, applyDeepCopyMap, nil); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestConcurrentRange(t *testing.T) {
+	const mapSize = 1 << 10
+
+	m := new(shardmap.Map)
+	for n := int64(1); n <= mapSize; n++ {
+		m.Store(strconv.FormatInt(n, 10), int64(n))
+	}
+
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	defer func() {
+		close(done)
+		wg.Wait()
+	}()
+	for g := int64(runtime.GOMAXPROCS(0)); g > 0; g-- {
+		r := rand.New(rand.NewSource(g))
+		wg.Add(1)
+		go func(g int64) {
+			defer wg.Done()
+			for i := int64(0); ; i++ {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				for n := int64(1); n < mapSize; n++ {
+					if r.Int63n(mapSize) == 0 {
+						m.Store(strconv.FormatInt(n, 10), n*i*g)
+					} else {
+						m.Load(strconv.FormatInt(n, 10))
+					}
+				}
 			}
-		}
-		if m.Len() != N {
-			t.Fatalf("expected %v, got %v", N, m.Len())
-		}
-		// retrieve all the items
-		shuffle(nums)
-		for i := 0; i < len(nums); i++ {
-			v, ok := m.Get(nums[i])
-			if !ok || v == nil || v != nums[i] {
-				t.Fatalf("expected %v, got %v", nums[i], v)
+		}(g)
+	}
+
+	iters := 1 << 10
+	if testing.Short() {
+		iters = 16
+	}
+	for n := iters; n > 0; n-- {
+		seen := make(map[int64]bool, mapSize)
+
+		m.Range(func(ki, vi interface{}) bool {
+			sk, v := ki.(string), vi.(int64)
+			k, err := strconv.ParseInt(sk, 10, 64)
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
-		// replace all the items
-		shuffle(nums)
-		for i := 0; i < len(nums); i++ {
-			v, ok := m.Set(nums[i], add(nums[i], 1))
-			if !ok || v != nums[i] {
-				t.Fatalf("expected %v, got %v", nums[i], v)
+			if v%k != 0 {
+				t.Fatalf("while Storing multiples of %v, Range saw value %v", k, v)
 			}
-		}
-		if m.Len() != N {
-			t.Fatalf("expected %v, got %v", N, m.Len())
-		}
-		// retrieve all the items
-		shuffle(nums)
-		for i := 0; i < len(nums); i++ {
-			v, ok := m.Get(nums[i])
-			if !ok || v != add(nums[i], 1) {
-				t.Fatalf("expected %v, got %v", add(nums[i], 1), v)
+			if seen[k] {
+				t.Fatalf("Range visited key %v twice", k)
 			}
-		}
-		// remove half the items
-		shuffle(nums)
-		for i := 0; i < len(nums)/2; i++ {
-			v, ok := m.Delete(nums[i])
-			if !ok || v != add(nums[i], 1) {
-				t.Fatalf("expected %v, got %v", add(nums[i], 1), v)
-			}
-		}
-		if m.Len() != N/2 {
-			t.Fatalf("expected %v, got %v", N/2, m.Len())
-		}
-		// check to make sure that the items have been removed
-		for i := 0; i < len(nums)/2; i++ {
-			v, ok := m.Get(nums[i])
-			if ok || v != nil {
-				t.Fatalf("expected %v, got %v", nil, v)
-			}
-		}
-		// check the second half of the items
-		for i := len(nums) / 2; i < len(nums); i++ {
-			v, ok := m.Get(nums[i])
-			if !ok || v != add(nums[i], 1) {
-				t.Fatalf("expected %v, got %v", add(nums[i], 1), v)
-			}
-		}
-		// try to delete again, make sure they don't exist
-		for i := 0; i < len(nums)/2; i++ {
-			v, ok := m.Delete(nums[i])
-			if ok || v != nil {
-				t.Fatalf("expected %v, got %v", nil, v)
-			}
-		}
-		if m.Len() != N/2 {
-			t.Fatalf("expected %v, got %v", N/2, m.Len())
-		}
-		m.Range(func(key keyT, value valueT) bool {
-			if value != add(key, 1) {
-				t.Fatalf("expected %v, got %v", add(key, 1), value)
-			}
+			seen[k] = true
 			return true
 		})
-		var n int
-		m.Range(func(key keyT, value valueT) bool {
-			n++
-			return false
-		})
-		if n != 1 {
-			t.Fatalf("expected %v, got %v", 1, n)
-		}
-		for i := len(nums) / 2; i < len(nums); i++ {
-			v, ok := m.Delete(nums[i])
-			if !ok || v != add(nums[i], 1) {
-				t.Fatalf("expected %v, got %v", add(nums[i], 1), v)
-			}
-		}
-	}
-}
 
-func TestSetAccept(t *testing.T) {
-	var m Map
-	m.Set("hello", "world")
-	prev, replaced := m.SetAccept("hello", "planet", nil)
-	if !replaced {
-		t.Fatal("expected true")
-	}
-	if prev.(string) != "world" {
-		t.Fatalf("expected '%v', got '%v'", "world", prev)
-	}
-	if v, _ := m.Get("hello"); v.(string) != "planet" {
-		t.Fatalf("expected '%v', got '%v'", "planet", v)
-	}
-	prev, replaced = m.SetAccept("hello", "world", func(prev interface{}, replaced bool) bool {
-		if !replaced {
-			t.Fatal("expected true")
+		if len(seen) != mapSize {
+			t.Fatalf("Range visited %v elements of %v-element Map", len(seen), mapSize)
 		}
-		if prev.(string) != "planet" {
-			t.Fatalf("expected '%v', got '%v'", "planet", prev)
-		}
-		return true
-	})
-	if !replaced {
-		t.Fatal("expected true")
 	}
-	if prev.(string) != "planet" {
-		t.Fatalf("expected '%v', got '%v'", "planet", prev)
-	}
-	prev, replaced = m.SetAccept("hello", "planet", func(prev interface{}, replaced bool) bool {
-		if !replaced {
-			t.Fatal("expected true")
-		}
-		if prev.(string) != "world" {
-			t.Fatalf("expected '%v', got '%v'", "world", prev)
-		}
-		return false
-	})
-	if replaced {
-		t.Fatal("expected false")
-	}
-	if prev != nil {
-		t.Fatalf("expected '%v', got '%v'", nil, prev)
-	}
-	if v, _ := m.Get("hello"); v.(string) != "world" {
-		t.Fatalf("expected '%v', got '%v'", "world", v)
-	}
-
-	prev, replaced = m.SetAccept("hi", "world", func(prev interface{}, replaced bool) bool {
-		if replaced {
-			t.Fatal("expected false")
-		}
-		if prev != nil {
-			t.Fatalf("expected '%v', got '%v'", nil, prev)
-		}
-		return false
-	})
-	if replaced {
-		t.Fatal("expected false")
-	}
-	if prev != nil {
-		t.Fatalf("expected '%v', got '%v'", nil, prev)
-	}
-}
-
-func TestDeleteAccept(t *testing.T) {
-	var m Map
-	m.Set("hello", "world")
-	prev, deleted := m.DeleteAccept("hello", nil)
-	if !deleted {
-		t.Fatal("expected true")
-	}
-	if prev.(string) != "world" {
-		t.Fatalf("expected '%v', got '%v'", "world", prev)
-	}
-	m.Set("hello", "world")
-	prev, deleted = m.DeleteAccept("hello", func(prev interface{}, deleted bool) bool {
-		if !deleted {
-			t.Fatal("expected true")
-		}
-		if prev.(string) != "world" {
-			t.Fatalf("expected '%v', got '%v'", "world", prev)
-		}
-		return true
-	})
-	if !deleted {
-		t.Fatal("expected true")
-	}
-	if prev.(string) != "world" {
-		t.Fatalf("expected '%v', got '%v'", "world", prev)
-	}
-	m.Set("hello", "world")
-	prev, deleted = m.DeleteAccept("hello", func(prev interface{}, deleted bool) bool {
-		if !deleted {
-			t.Fatal("expected true")
-		}
-		if prev.(string) != "world" {
-			t.Fatalf("expected '%v', got '%v'", "world", prev)
-		}
-		return false
-	})
-	if deleted {
-		t.Fatal("expected false")
-	}
-	if prev != nil {
-		t.Fatalf("expected '%v', got '%v'", nil, prev)
-	}
-	prev, ok := m.Get("hello")
-	if !ok {
-		t.Fatal("expected true")
-	}
-	if prev.(string) != "world" {
-		t.Fatalf("expected '%v', got '%v'", "world", prev)
-	}
-
-}
-
-func TestClear(t *testing.T) {
-	var m Map
-	for i := 0; i < 1000; i++ {
-		m.Set(fmt.Sprintf("%d", i), i)
-	}
-	if m.Len() != 1000 {
-		t.Fatalf("expected '%v', got '%v'", 1000, m.Len())
-	}
-	m.Clear()
-	if m.Len() != 0 {
-		t.Fatalf("expected '%v', got '%v'", 0, m.Len())
-	}
-
 }

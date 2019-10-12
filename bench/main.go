@@ -147,19 +147,19 @@ func main() {
 	var com shardmap.Map
 	print("set: ")
 	lotsa.Ops(N, runtime.NumCPU(), func(i, _ int) {
-		com.Set(keys[i], i)
+		com.Store(keys[i], i)
 	})
 
 	print("get: ")
 	lotsa.Ops(N, runtime.NumCPU(), func(i, _ int) {
-		v, _ := com.Get(keys[i])
+		v, _ := com.Load(keys[i])
 		if v.(int) != i {
 			panic("bad news")
 		}
 	})
 	print("rng:       ")
 	lotsa.Ops(100, runtime.NumCPU(), func(i, _ int) {
-		com.Range(func(key string, value interface{}) bool {
+		com.Range(func(key, value interface{}) bool {
 			return true
 		})
 	})
