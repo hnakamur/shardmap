@@ -6,7 +6,6 @@ import (
 	"os"
 	"runtime"
 	"sync"
-	"time"
 
 	cmap "github.com/orcaman/concurrent-map"
 	"github.com/tidwall/lotsa"
@@ -24,7 +23,7 @@ func randKey(rnd *rand.Rand, n int) string {
 
 func main() {
 
-	seed := time.Now().UnixNano()
+	seed := int64(1570894115504546607)
 	// println(seed)
 	rng := rand.New(rand.NewSource(seed))
 	N := 1_000_000
