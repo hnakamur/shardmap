@@ -159,7 +159,7 @@ func main() {
 	})
 	print("rng:       ")
 	lotsa.Ops(100, runtime.NumCPU(), func(i, _ int) {
-		com.Range(func(key, value interface{}) bool {
+		com.Range(func(key string, value interface{}) bool {
 			return true
 		})
 	})

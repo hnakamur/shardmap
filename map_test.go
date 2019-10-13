@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"reflect"
 	"runtime"
+	"strconv"
 	"sync"
 	"testing"
 	"testing/quick"
@@ -28,8 +29,9 @@ var mapOps = [...]mapOp{opLoad, opStore, opLoadOrStore, opDelete}
 
 // mapCall is a quick.Generator for calls on mapInterface.
 type mapCall struct {
-	op   mapOp
-	k, v interface{}
+	op mapOp
+	k  string
+	v  interface{}
 }
 
 func (c mapCall) apply(m mapInterface) (interface{}, bool) {
@@ -63,7 +65,7 @@ func randValue(r *rand.Rand) interface{} {
 }
 
 func (mapCall) Generate(r *rand.Rand, size int) reflect.Value {
-	c := mapCall{op: mapOps[rand.Intn(len(mapOps))], k: randValue(r)}
+	c := mapCall{op: mapOps[rand.Intn(len(mapOps))], k: randValue(r).(string)}
 	switch c.op {
 	case opStore, opLoadOrStore:
 		c.v = randValue(r)
@@ -71,14 +73,14 @@ func (mapCall) Generate(r *rand.Rand, size int) reflect.Value {
 	return reflect.ValueOf(c)
 }
 
-func applyCalls(m mapInterface, calls []mapCall) (results []mapResult, final map[interface{}]interface{}) {
+func applyCalls(m mapInterface, calls []mapCall) (results []mapResult, final map[string]interface{}) {
 	for _, c := range calls {
 		v, ok := c.apply(m)
 		results = append(results, mapResult{v, ok})
 	}
 
-	final = make(map[interface{}]interface{})
-	m.Range(func(k, v interface{}) bool {
+	final = make(map[string]interface{})
+	m.Range(func(k string, v interface{}) bool {
 		final[k] = v
 		return true
 	})
@@ -86,15 +88,15 @@ func applyCalls(m mapInterface, calls []mapCall) (results []mapResult, final map
 	return results, final
 }
 
-func applyMap(calls []mapCall) ([]mapResult, map[interface{}]interface{}) {
+func applyMap(calls []mapCall) ([]mapResult, map[string]interface{}) {
 	return applyCalls(new(shardmap.Map), calls)
 }
 
-func applyRWMutexMap(calls []mapCall) ([]mapResult, map[interface{}]interface{}) {
+func applyRWMutexMap(calls []mapCall) ([]mapResult, map[string]interface{}) {
 	return applyCalls(new(RWMutexMap), calls)
 }
 
-func applyDeepCopyMap(calls []mapCall) ([]mapResult, map[interface{}]interface{}) {
+func applyDeepCopyMap(calls []mapCall) ([]mapResult, map[string]interface{}) {
 	return applyCalls(new(DeepCopyMap), calls)
 }
 
@@ -115,7 +117,7 @@ func TestConcurrentRange(t *testing.T) {
 
 	m := new(shardmap.Map)
 	for n := int64(1); n <= mapSize; n++ {
-		m.Store(n, int64(n))
+		m.Store(strconv.FormatInt(n, 10), int64(n))
 	}
 
 	done := make(chan struct{})
@@ -137,9 +139,9 @@ func TestConcurrentRange(t *testing.T) {
 				}
 				for n := int64(1); n < mapSize; n++ {
 					if r.Int63n(mapSize) == 0 {
-						m.Store(n, n*i*g)
+						m.Store(strconv.FormatInt(n, 10), n*i*g)
 					} else {
-						m.Load(n)
+						m.Load(strconv.FormatInt(n, 10))
 					}
 				}
 			}
@@ -153,8 +155,12 @@ func TestConcurrentRange(t *testing.T) {
 	for n := iters; n > 0; n-- {
 		seen := make(map[int64]bool, mapSize)
 
-		m.Range(func(ki, vi interface{}) bool {
-			k, v := ki.(int64), vi.(int64)
+		m.Range(func(ks string, vi interface{}) bool {
+			v := vi.(int64)
+			k, err := strconv.ParseInt(ks, 10, 64)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if v%k != 0 {
 				t.Fatalf("while Storing multiples of %v, Range saw value %v", k, v)
 			}
